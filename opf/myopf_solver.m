@@ -1,5 +1,5 @@
 function [results, success, raw] = myopf_solver(om, mpopt)
-%MIPSOPF_SOLVER  Solves AC optimal power flow using MIPS.
+%SUSUSWEETOPF_SOLVER  Solves AC optimal power flow using Interior Point method provided in Modern Power System Analysis.
 %       min F(X)
 %        X
 %
@@ -85,6 +85,9 @@ nb = size(bus, 1);          %% number of buses
 nl = size(branch, 1);       %% number of branches
 ny = getN(om, 'var', 'y');  %% number of piece-wise linear costs
 ng = size(gen, 1);
+%% find branches with flow limits
+il = find(branch(:, RATE_A) ~= 0 & branch(:, RATE_A) < 1e10);
+nl2 = length(il);           %% number of constrained lines
 
 %% linear constraints
 [A, l, u] = linear_constraints(om);
@@ -99,7 +102,6 @@ x0_P_tmp = (gen(:, PMAX) + gen(:, PMIN)) ./ 2 ./ baseMVA;
 x0_Q_tmp = (gen(:, QMAX) + gen(:, QMIN)) ./ 2 ./ baseMVA;
 % x0_P_tmp = (gen(:, PMAX)) ./ baseMVA;
 % x0_Q_tmp = (gen(:, QMAX)) ./ baseMVA;
-
 x0(2*nb+1:end) = [];
 % 系统中所有变量的约束条件，排列顺序为P1~g,Q1~g,theta1~n,V1~n
 x0 = [x0_P_tmp; x0_Q_tmp; x0];
@@ -131,13 +133,10 @@ nvariable = size(x0, 1);
 %     end
 % end
 
-%% find branches with flow limits
-il = find(branch(:, RATE_A) ~= 0 & branch(:, RATE_A) < 1e10);
-nl2 = length(il);           %% number of constrained lines
-
-%%-----  run myopf  -----
-%% Step 1: Calculate Gap
-% build slack variable
+%% ====================================================================
+%% -----  run myopf  -----
+%% Calculate Gap
+% build initial variables
 r_num = nvariable - nb + nl2;
 r_num2 = r_num + nl2;
 lslack = ones(r_num2, 1);
@@ -145,58 +144,29 @@ uslack = ones(r_num2, 1);
 zLagr = ones(r_num2, 1);
 wLagr = -0.5 * ones(r_num2, 1);
 yLagr = 1e-3 * [ones(nb, 1); -ones(nb, 1)];
-
 % lslack = 0.8*ones(r_num2, 1);
 % uslack = 1.1*ones(r_num2, 1);
 % zLagr = ones(r_num2, 1);
 % wLagr = -1.5 * ones(r_num2, 1);
 % yLagr = 1e-3 * [ones(nb, 1); -ones(nb, 1)];
-Gap = lslack' * zLagr - uslack' * wLagr;
 
-%
-%
-% for i = 1:nb
-%     syms(['theta',num2str(i)]);
-%     syms(['V',num2str(i)]);
-% end
-% theta = sym('theta', [1, nb]);
-% V = sym('V', [1, nb]);
-%
-%
-%
-% for i = 1:ng
-%     syms(['PG',num2str(i)]);
-%     syms(['QG',num2str(i)]);
-% end
-% PG = sym('PG', [1, ng]);
-% QG = sym('QG', [1, ng]);
-%
-%
-% h_fcn = r*cos(l)*cos(f);
-% y=r*cos(l)*sin(f);
-% z=r*sin(l);
-% J=jacobian([x;y;z],[r l f])
-%
+iterCount = 1;
+Gap = lslack' * zLagr - uslack' * wLagr;
+Gap_arr(iterCount) = Gap;
+
+%% ====================================================================
+% Cg: nb, ng generator connection matrix
+% (i; j)th element is 1 if generator j is located at bus i, 0 otherwise
 Cg = zeros(nb, ng);
 gen_point = gen(:, GEN_BUS);
-% h_PG = zeros(ng, 2 * nb);
-% h_QG = zeros(ng, 2 * nb);
-
 for i = 1:size(gen_point,1)
     Cg(gen_point(i, 1), i) = -1;
-    % h_PG(i, gen_point(i, 1)) = 1;
-    % h_QG(i, gen_point(i, 1) + nb) = 1;
 end
 
 while Gap >= 1e-6
     miu = 0.1 * Gap / (2 * (r_num2));
-    %% ====================================================================
-    %% form function h first derivatives
-    % Cg: nb, ng generator connection matrix
-    % (i; j)th element is 1 if generator j is located at bus i, 0 otherwise
     
-    
-    
+    %% get variables from x0
     x0_Pg = x0(1:ng);
     x0_Qg = x0(ng + 1:2 * ng);
     x0_theta = x0(2 * ng + 1: 2 * ng + nb);
@@ -205,12 +175,13 @@ while Gap >= 1e-6
     Ibus = Ybus * x0_V_theta;
     diagIbus = diag(Ibus);
     
-    
+    %% update result variables
     gen(:, PG) = x0_Pg * baseMVA;
     gen(:, QG) = x0_Qg * baseMVA;
     gen(:, VG) = x0(2*ng + nb + gen(:, GEN_BUS));
     bus(:, VA) = rad2deg(x0_theta);
     bus(:, VM) = x0_V;
+
     %% compute branch flows
     Sf = x0_V_theta(branch(:, F_BUS)) .* conj(Yf * x0_V_theta);  %% cplx pwr at "from" bus, p.u.
     St = x0_V_theta(branch(:, T_BUS)) .* conj(Yt * x0_V_theta);  %% cplx pwr at "to" bus, p.u.
@@ -219,10 +190,10 @@ while Gap >= 1e-6
     branch(:, PT) = real(St) * baseMVA;
     branch(:, QT) = imag(St) * baseMVA;
     
-    
+    %% ====================================================================
+    %% form function h first derivatives
     x0_V_theta_diag = diag(x0_V_theta);
     x0_V_norm_diag = diag(x0_V_theta ./ abs(x0_V_theta));
-    
     dSbus_dVm = x0_V_theta_diag * conj(Ybus * x0_V_norm_diag) + conj(diagIbus) * x0_V_norm_diag;
     dSbus_dVa = 1j * x0_V_theta_diag * conj(diagIbus - Ybus * x0_V_theta_diag);
     
@@ -231,9 +202,7 @@ while Gap >= 1e-6
         real(dSbus_dVa.'), imag(dSbus_dVa.');
         real(dSbus_dVm.'), imag(dSbus_dVm.')];
     
-    %% ====================================================================
-    % %% form function g first derivatives
-    % % Computes partial derivatives of power flows w.r.t. voltage.
+
     % % define
     % f = branch(:, F_BUS);       %% list of "from" buses
     % t = branch(:, T_BUS);       %% list of "to" buses
@@ -263,16 +232,18 @@ while Gap >= 1e-6
     %
     % g4_x = [real(dSf_dVa - dSt_dVa); real(dSf_dVm - dSt_dVm)];
     
-    
-    nxyz = nvariable;
     %% construct Jacobian of equality (power flow) constraints and transpose it
+    % nxyz = nvariable;
     % dg = sparse(2*nb, nxyz);
     % dg(:, [iVa iVm iPg iQg]) = [
     %     real([dSbus_dVa dSbus_dVm]) neg_Cg sparse(nb, ng);  %% P mismatch w.r.t Va, Vm, Pg, Qg
     %     imag([dSbus_dVa dSbus_dVm]) sparse(nb, ng) neg_Cg;  %% Q mismatch w.r.t Va, Vm, Pg, Qg
     %     ];
     % dg = dg';
-    
+
+    %% ====================================================================
+    % % form function g first derivatives
+    % % Computes partial derivatives of power flows w.r.t. voltage.
     if nl2 > 0
         %% compute partials of Flows w.r.t. V
         if upper(mpopt.opf.flow_lim(1)) == 'I'  %% current
@@ -290,25 +261,25 @@ while Gap >= 1e-6
         end
         
         %% squared magnitude of flow (of complex power or current, or real power)
-        [df_dVa, df_dVm, dt_dVa, dt_dVm] = ...
-            dAbr_dV(dFf_dVa, dFf_dVm, dFt_dVa, dFt_dVm, Ff, Ft);
+        % [df_dVa, df_dVm, dt_dVa, dt_dVm] = ...
+        %     dAbr_dV(dFf_dVa, dFf_dVm, dFt_dVa, dFt_dVm, Ff, Ft);
         
         %% construct Jacobian of inequality (branch flow) constraints & transpose
         g4_x = [
-            dFf_dVa', dFt_dVa'; 
+            dFf_dVa', dFt_dVa';
             dFf_dVm', dFt_dVm'
         ];
         %g4_x = [
         %    df_dVa, df_dVm;
         %    dt_dVa, dt_dVm
         %];
-        % g4_x = g4_x;
     else
-        fprintf('Error!');
+        fprintf('Not supported!');
+        success = 0;
         return;
         % g4_x = zeros(2 * nb, nl2);
     end
-    % dFf_dVa', dFf_dVm';
+    
     g_grad_matrix = [eye(ng, ng) zeros(ng, r_num2 - ng);
         zeros(ng, ng), eye(ng, ng), zeros(ng, r_num2 - 2 * ng);
         zeros(2 * nb, ng), zeros(2 * nb, ng), [zeros(nb, nb); eye(nb, nb)], g4_x];
@@ -401,6 +372,7 @@ while Gap >= 1e-6
         flow_max(flow_max == 0) = Inf;
         if upper(mpopt.opf.flow_lim(1)) == 'I'    %% current magnitude limit, |I|
             fprintf('Not supported!');
+            success = 0;
             return;
             % If = Yf * x0_V_theta;
             % It = Yt * x0_V_theta;
@@ -423,6 +395,7 @@ while Gap >= 1e-6
                     real(St) - flow_max] + uslack;
             else                                    %% apparent power limit, |S|
                 fprintf('Not supported!');
+                success = 0;
                 return;
                 g_fcn = [ Sf .* conj(Sf) - flow_max;      %% branch apparent power limits (from bus)
                     St .* conj(St) - flow_max ];    %% branch apparent power limits (to bus)
@@ -430,6 +403,7 @@ while Gap >= 1e-6
         end
     else
         fprintf('Not supported!');
+        success = 0;
         return;
         g_fcn = zeros(0,1);
     end
@@ -443,20 +417,19 @@ while Gap >= 1e-6
     [deltaEq_xxx, info] = mplinsolve([HH_matrix,h_grad_matrix;h_grad_matrix',zeros(2*nb, 2*nb)], [C_Lxx;-C_Ly], opt.linsolver, []);
     delta_x = deltaEq_xxx(1:nvariable);
     delta_y =  deltaEq_xxx(nvariable+1:end);
-   % [deltaEq_xxx, info] = mplinsolve(h_grad_matrix, (C_Lxx - HH_matrix * delta_x), opt.linsolver, []);
+    % [deltaEq_xxx, info] = mplinsolve(h_grad_matrix, (C_Lxx - HH_matrix * delta_x), opt.linsolver, []);
     
+    % [deltaEq_xxx, info] = mplinsolve(eye(r_num2, r_num2), (), opt.linsolver, []);
+    delta_u = -C_Lw - g_grad_matrix' * delta_x;
     
-    [deltaEq_xxx, info] = mplinsolve(eye(r_num2, r_num2), (-C_Lw - g_grad_matrix' * delta_x), opt.linsolver, []);
-    delta_u =  deltaEq_xxx;
+    % [deltaEq_xxx, info] = mplinsolve(eye(r_num2, r_num2), (), opt.linsolver, []);
+    delta_l = C_Lz + g_grad_matrix' * delta_x;
     
-    [deltaEq_xxx, info] = mplinsolve(eye(r_num2, r_num2), (C_Lz + g_grad_matrix' * delta_x), opt.linsolver, []);
-    delta_l =  deltaEq_xxx;
+    % [deltaEq_xxx, info] = mplinsolve(eye(r_num2, r_num2), (), opt.linsolver, []);
+    delta_z = -diag(lslack)^(-1) * C_Ll - L_Z * delta_l;
     
-    [deltaEq_xxx, info] = mplinsolve(eye(r_num2, r_num2), (-diag(lslack)^(-1) * C_Ll - L_Z * delta_l), opt.linsolver, []);
-    delta_z =  deltaEq_xxx;
-    
-    [deltaEq_xxx, info] = mplinsolve(eye(r_num2, r_num2), (-diag(uslack)^(-1) * C_Lu - U_W * delta_u), opt.linsolver, []);
-    delta_w =  deltaEq_xxx;
+    % [deltaEq_xxx, info] = mplinsolve(eye(r_num2, r_num2), (), opt.linsolver, []);
+    delta_w = -diag(uslack)^(-1) * C_Lu - U_W * delta_u;
     
     %     Eq_AAA = [eye(r_num2, r_num2), L_Z, zeros(r_num2, r_num2), zeros(r_num2, r_num2), zeros(r_num2, nvariable), zeros(r_num2, 2*nb);
     %               zeros(r_num2, r_num2), eye(r_num2, r_num2), zeros(r_num2, r_num2), zeros(r_num2, r_num2), -g_grad_matrix', zeros(r_num2, 2*nb);
@@ -494,106 +467,66 @@ while Gap >= 1e-6
     alpha_d = 0.9995 * min([min(-zLagr(delta_z_below0_idx) ./ delta_z(delta_z_below0_idx)), min(-wLagr(delta_w_below0_idx) ./ delta_w(delta_w_below0_idx)), 1]);
     
     x0 = x0 + alpha_p * delta_x;
-    % x0(2*ng + nb) = 0;
+    x0(2*ng + 1:2*ng + nb) = x0(2*ng + 1:2*ng + nb) - x0(2*ng + nb);
     lslack = lslack + alpha_p * delta_l;
     uslack = uslack + alpha_p * delta_u;
     yLagr = yLagr + alpha_d * delta_y;
     zLagr = zLagr + alpha_d * delta_z;
     wLagr = wLagr + alpha_d * delta_w;
     
-    
-    %% line constraint is actually on square of limit
-    %% so we must fix multipliers
-    %     muSf = zeros(nl, 1);
-    %     muSt = zeros(nl, 1);
-    %     if ~isempty(il)
-    %         muSf(il) = 2 * Lambda.ineqnonlin(1:nl2)       .* branch(il, RATE_A) / baseMVA;
-    %         muSt(il) = 2 * Lambda.ineqnonlin((1:nl2)+nl2) .* branch(il, RATE_A) / baseMVA;
-    %     end
-    
     Gap = lslack' * zLagr - uslack' * wLagr;
-    disp(['GAP: ' num2str(Gap)]);
+    iterCount = iterCount + 1;
+    Gap_arr(iterCount) = Gap;
 end
-
-
-return;
-f_fcn = @(x)opf_costfcn(x, om);
-gh_fcn = @(x)opf_consfcn(x, om, Ybus, Yf(il,:), Yt(il,:), mpopt, il);
-hess_fcn = @(x, lambda, cost_mult)opf_hessfcn(x, lambda, cost_mult, om, Ybus, Yf(il,:), Yt(il,:), mpopt, il);
-
-[x, f, info, Output, Lambda] = ...
-    mips(f_fcn, x0, A, l, u, xmin, xmax, gh_fcn, hess_fcn, opt);
-success = (info > 0);
-
-%% update solution data
-Va = x(vv.i1.Va:vv.iN.Va);
-Vm = x(vv.i1.Vm:vv.iN.Vm);
-Pg = x(vv.i1.Pg:vv.iN.Pg);
-Qg = x(vv.i1.Qg:vv.iN.Qg);
-V = Vm .* exp(1j*Va);
+%
+% f_fcn = @(x)opf_costfcn(x, om);
+% gh_fcn = @(x)opf_consfcn(x, om, Ybus, Yf(il,:), Yt(il,:), mpopt, il);
+% hess_fcn = @(x, lambda, cost_mult)opf_hessfcn(x, lambda, cost_mult, om, Ybus, Yf(il,:), Yt(il,:), mpopt, il);
+%
+% [x, f, info, Output, Lambda] = ...
+%     mips(f_fcn, x0, A, l, u, xmin, xmax, gh_fcn, hess_fcn, opt);
+% success = (info > 0);
+%
 
 %%-----  calculate return values  -----
 %% update voltages & generator outputs
-bus(:, VA) = Va * 180/pi;
-bus(:, VM) = Vm;
-gen(:, PG) = Pg * baseMVA;
-gen(:, QG) = Qg * baseMVA;
-gen(:, VG) = Vm(gen(:, GEN_BUS));
+x0_Pg = x0(1:ng);
+x0_Qg = x0(ng + 1:2 * ng);
+x0_theta = x0(2 * ng + 1: 2 * ng + nb);
+x0_V = x0(2 * ng + nb + 1 : end);
+x0_V_theta = x0_V .* exp(1j * x0_theta);
+Ibus = Ybus * x0_V_theta;
+diagIbus = diag(Ibus);
+% form function f
+f_value = sum(x0_Pg .^2 .* gencost(:, COST) * 1e4 + x0_Pg .* gencost(:, COST+1) * 1e2 + gencost(:, COST+2));
 
+gen(:, PG) = x0_Pg * baseMVA;
+gen(:, QG) = x0_Qg * baseMVA;
+gen(:, VG) = x0(2*ng + nb + gen(:, GEN_BUS));
+bus(:, VA) = rad2deg(x0_theta);
+bus(:, VM) = x0_V;
 %% compute branch flows
-Sf = V(branch(:, F_BUS)) .* conj(Yf * V);  %% cplx pwr at "from" bus, p.u.
-St = V(branch(:, T_BUS)) .* conj(Yt * V);  %% cplx pwr at "to" bus, p.u.
+Sf = x0_V_theta(branch(:, F_BUS)) .* conj(Yf * x0_V_theta);  %% cplx pwr at "from" bus, p.u.
+St = x0_V_theta(branch(:, T_BUS)) .* conj(Yt * x0_V_theta);  %% cplx pwr at "to" bus, p.u.
 branch(:, PF) = real(Sf) * baseMVA;
 branch(:, QF) = imag(Sf) * baseMVA;
 branch(:, PT) = real(St) * baseMVA;
 branch(:, QT) = imag(St) * baseMVA;
 
-%% line constraint is actually on square of limit
-%% so we must fix multipliers
-muSf = zeros(nl, 1);
-muSt = zeros(nl, 1);
-if ~isempty(il)
-    muSf(il) = 2 * Lambda.ineqnonlin(1:nl2)       .* branch(il, RATE_A) / baseMVA;
-    muSt(il) = 2 * Lambda.ineqnonlin((1:nl2)+nl2) .* branch(il, RATE_A) / baseMVA;
-end
-
-%% update Lagrange multipliers
-bus(:, MU_VMAX)  = Lambda.upper(vv.i1.Vm:vv.iN.Vm);
-bus(:, MU_VMIN)  = Lambda.lower(vv.i1.Vm:vv.iN.Vm);
-gen(:, MU_PMAX)  = Lambda.upper(vv.i1.Pg:vv.iN.Pg) / baseMVA;
-gen(:, MU_PMIN)  = Lambda.lower(vv.i1.Pg:vv.iN.Pg) / baseMVA;
-gen(:, MU_QMAX)  = Lambda.upper(vv.i1.Qg:vv.iN.Qg) / baseMVA;
-gen(:, MU_QMIN)  = Lambda.lower(vv.i1.Qg:vv.iN.Qg) / baseMVA;
-bus(:, LAM_P)    = Lambda.eqnonlin(nn.i1.Pmis:nn.iN.Pmis) / baseMVA;
-bus(:, LAM_Q)    = Lambda.eqnonlin(nn.i1.Qmis:nn.iN.Qmis) / baseMVA;
-branch(:, MU_SF) = muSf / baseMVA;
-branch(:, MU_ST) = muSt / baseMVA;
-
 %% package up results
 nlnN = getN(om, 'nln');
 
-%% extract multipliers for nonlinear constraints
-kl = find(Lambda.eqnonlin < 0);
-ku = find(Lambda.eqnonlin > 0);
-nl_mu_l = zeros(nlnN, 1);
-nl_mu_u = [zeros(2*nb, 1); muSf; muSt];
-nl_mu_l(kl) = -Lambda.eqnonlin(kl);
-nl_mu_u(ku) =  Lambda.eqnonlin(ku);
-
-mu = struct( ...
-    'var', struct('l', Lambda.lower, 'u', Lambda.upper), ...
-    'nln', struct('l', nl_mu_l, 'u', nl_mu_u), ...
-    'lin', struct('l', Lambda.mu_l, 'u', Lambda.mu_u) );
-
 results = mpc;
-[results.bus, results.branch, results.gen, ...
-    results.om, results.x, results.mu, results.f] = ...
-    deal(bus, branch, gen, om, x, mu, f);
+% 系统中所有变量，排列顺序为P1~g,Q1~g,theta1~n,V1~n
+tmp = x0(2*nb+1:end);
+x0(2*nb+1:end) = [];
+x0 = [tmp; x0];
 
-pimul = [ ...
-    results.mu.nln.l - results.mu.nln.u;
-    results.mu.lin.l - results.mu.lin.u;
-    -ones(ny>0, 1);
-    results.mu.var.l - results.mu.var.u;
-    ];
-raw = struct('xr', x, 'pimul', pimul, 'info', info, 'output', Output);
+[results.bus, results.branch, results.gen, results.x, results.f] = deal(bus, branch, gen, x0, f_value);
+success = 1;
+raw = struct('xr', x0, 'info', info);
+
+plot(1:iterCount,Gap_arr,'-*');
+set(gca,'YScale','log');
+xlabel('迭代次数'),ylabel('Gap');
+title('最优潮流内点法收敛特性');

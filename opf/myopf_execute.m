@@ -197,8 +197,6 @@ if ~sdp
     if getN(om, 'var', name)
       idx = vv.i1.(name):vv.iN.(name);
       results.var.val.(name) = results.x(idx);
-      results.var.mu.l.(name) = results.mu.var.l(idx);
-      results.var.mu.u.(name) = results.mu.var.u(idx);
     end
   end
 
@@ -213,18 +211,6 @@ if ~sdp
     end
   end
 
-  %% assign shadow prices for nonlinear constraints
-  if ~dc
-    om_nln_order = get(om, 'nln', 'order');
-    for k = 1:length(om_nln_order)
-      name = om_nln_order(k).name;
-      if getN(om, 'nln', name)
-        idx = nn.i1.(name):nn.iN.(name);
-        results.nln.mu.l.(name) = results.mu.nln.l(idx);
-        results.nln.mu.u.(name) = results.mu.nln.u(idx);
-      end
-    end
-  end
 
   %% assign values for components of user cost
   om_cost_order = get(om, 'cost', 'order');
