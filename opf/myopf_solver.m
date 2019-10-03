@@ -143,7 +143,7 @@ lslack = ones(r_num2, 1);
 uslack = ones(r_num2, 1);
 zLagr = ones(r_num2, 1);
 wLagr = -0.5 * ones(r_num2, 1);
-yLagr = 1e-3 * [ones(nb, 1); -ones(nb, 1)];
+yLagr = 1e-10 * [ones(nb, 1); -ones(nb, 1)];
 % lslack = 0.8*ones(r_num2, 1);
 % uslack = 1.1*ones(r_num2, 1);
 % zLagr = ones(r_num2, 1);
@@ -514,7 +514,7 @@ branch(:, PT) = real(St) * baseMVA;
 branch(:, QT) = imag(St) * baseMVA;
 
 %% package up results
-nlnN = getN(om, 'nln');
+nlnN = 2*nb + 2*nl;     %% because muSf and muSt are nl x 1, not nl2 x 1
 
 results = mpc;
 % 系统中所有变量，排列顺序为P1~g,Q1~g,theta1~n,V1~n
