@@ -164,6 +164,7 @@ for i = 1:size(gen_point,1)
 end
 
 while Gap >= 1e-6
+    Gap_arr(iterCount) = Gap;
     miu = 0.1 * Gap / (2 * (r_num2));
     
     %% get variables from x0
@@ -317,7 +318,7 @@ while Gap >= 1e-6
     nmu = nl2;
     if nmu
         muF = zLagr((1:nmu)+2*ng+nb) + wLagr((1:nmu)+2*ng+nb);
-        muT = muF;
+        muT = zLagr((1:nmu)+2*ng+nb+nmu) + wLagr((1:nmu)+2*ng+nb+nmu);
     else    %% keep dimensions of empty matrices/vectors compatible
         muF = zeros(0,1);   %% (required to avoid problems when using Knitro
         muT = zeros(0,1);   %%  on cases with all lines unconstrained)
@@ -416,6 +417,7 @@ while Gap >= 1e-6
     
     [deltaEq_xxx, info] = mplinsolve([HH_matrix,h_grad_matrix;h_grad_matrix',zeros(2*nb, 2*nb)], [C_Lxx;-C_Ly], opt.linsolver, []);
     delta_x = deltaEq_xxx(1:nvariable);
+    delta_x_x = delta_x';
     delta_y =  deltaEq_xxx(nvariable+1:end);
     % [deltaEq_xxx, info] = mplinsolve(h_grad_matrix, (C_Lxx - HH_matrix * delta_x), opt.linsolver, []);
     
@@ -476,7 +478,6 @@ while Gap >= 1e-6
     
     Gap = lslack' * zLagr - uslack' * wLagr;
     iterCount = iterCount + 1;
-    Gap_arr(iterCount) = Gap;
 end
 %
 % f_fcn = @(x)opf_costfcn(x, om);
@@ -526,7 +527,7 @@ x0 = [tmp; x0];
 success = 1;
 raw = struct('xr', x0, 'info', info);
 
-plot(1:iterCount,Gap_arr,'-*');
+plot(1:size(Gap_arr,2),Gap_arr,'-*');
 set(gca,'YScale','log');
 xlabel('迭代次数'),ylabel('Gap');
 title('最优潮流内点法收敛特性');
